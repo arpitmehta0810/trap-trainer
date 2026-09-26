@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trap Trainer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b;
+    --light:#eadfc9; --dark:#5a4632; --accent:#3ddc84; --bad:#ff5d5d;
+    --text:#e8e8ec; --muted:#8b8fa3;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:radial-gradient(circle at 50% -10%, #1c2130 0%, var(--bg) 60%);
+    color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+    min-height:100%; display:flex; flex-direction:column; align-items:center; padding:24px 16px 40px;
+  }
+  h1{font-size:1.6rem; margin:4px 0 2px; letter-spacing:.5px;}
+  .sub{color:var(--muted); font-size:.85rem; margin-bottom:22px; text-align:center;}
+  .tree{display:flex; gap:14px; margin-bottom:26px; flex-wrap:wrap; justify-content:center;}
+  .node{
+    background:var(--panel); border:2px solid #2a2f3a; border-radius:14px; padding:12px 16px;
+    cursor:pointer; transition:all .2s; min-width:130px; text-align:center; position:relative;
+  }
+  .node:hover{transform:translateY(-3px); border-color:var(--accent);}
+  .node.active{border-color:var(--accent); box-shadow:0 0 18px -2px var(--accent);}
+  .node .dot{width:10px;height:10px;border-radius:50%;background:#3a3f4c;margin:0 auto 8px;transition:background .3s;}
+  .node.mastered .dot{background:var(--accent); box-shadow:0 0 8px var(--accent);}
+  .node .name{font-size:.85rem; font-weight:600;}
+  .main{display:flex; gap:28px; flex-wrap:wrap; justify-content:center; align-items:flex-start;}
+  .boardwrap{background:var(--panel); padding:14px; border-radius:16px; box-shadow:0 20px 40px -20px #000;}
+  .board{display:grid; grid-template-columns:repeat(8,min(11vw,52px)); grid-template-rows:repeat(8,min(11vw,52px)); border-radius:8px; overflow:hidden;}
+  .sq{display:flex;align-items:center;justify-content:center; font-size:min(8vw,38px); cursor:pointer; transition:background .15s; position:relative; user-select:none;}
+  .l{background:var(--light);} .d{background:var(--dark);}
+  .sel{outline:3px solid var(--accent); outline-offset:-3px;}
+  .good{background:#2f6f4f !important;} .bad{background:#7a3030 !important;}
+  .piece-w{color:#fff; text-shadow:0 0 2px #000, 0 0 4px #000;}
+  .piece-b{color:#111; text-shadow:0 0 2px #0009;}
+  .side{width:min(90vw,300px); display:flex; flex-direction:column; gap:14px;}
+  .card{background:var(--panel2); border-radius:14px; padding:16px;}
+  #status{font-size:.95rem; line-height:1.4; min-height:44px;}
+  .timerbar{height:8px; background:#2a2f3a; border-radius:6px; overflow:hidden; margin-top:10px;}
+  .timerfill{height:100%; background:linear-gradient(90deg,var(--accent),#2bb673); width:100%; transition:width .1s linear;}
+  .desc{color:var(--muted); font-size:.8rem; margin-top:8px;}
+  button.start{background:var(--accent); border:none; color:#04140a; font-weight:700; padding:10px 14px; border-radius:10px; cursor:pointer; width:100%;}
+  button.start:hover{filter:brightness(1.08);}
+</style>
+</head>
+<body>
+<h1>♟ Trap Trainer</h1>
+<div class="sub">Pick a trap. Watch the opponent blunder. React before the timer runs out.</div>
+
+<div class="tree" id="tree"></div>
+
+<div class="main">
+  <div class="boardwrap"><div class="board" id="board"></div></div>
+  <div class="side">
+    <div class="card">
+      <div id="status">Pick a trap above to begin.</div>
+      <div class="timerbar"><div class="timerfill" id="timerfill"></div></div>
+      <div class="desc" id="desc"></div>
+    </div>
+    <button class="start" id="retry" style="display:none">Try Again</button>
+  </div>
+</div>
+
+<script>
+const TRAPS = [
+  { id:'fried', name:'Fried Liver Attack',
+    moves:['e4','e5','Nf3','Nc6','Bc4','Nf6','Ng5','d5','exd5','Nxd5'],
+    punish:'Nxf7',
+    desc:'Grabbing on d5 opens the door — the knight sac rips the king out of the center.' },
+  { id:'legal', name:"Légal's Trap",
+    moves:['e4','e5','Nf3','d6','Bc4','Bg4','Nc3','g6'],
+    punish:'Nxe5',
+    desc:'The bishop on g4 looks scary — but the e5 pawn was the real hanging piece all along.' },
+  { id:'elephant', name:'Elephant Trap',
+    moves:['d4','d5','c4','e6','Nc3','Nf6','Bg5','Nbd7','cxd5','exd5','Nxd5'],
+    punish:'Nxd5',
+    desc:'Taking the free knight walks into a pin — the piece comes right back with interest.' },
+];
+
+let game, current, expected, selected=null, timer=null, timeLeft=0, locked=false;
+
+function mastered(id){ return localStorage.getItem('trap-'+id)==='1'; }
+function setMastered(id){ localStorage.setItem('trap-'+id,'1'); renderTree(); }
+
+function renderTree(){
+  const tree = document.getElementById('tree');
+  tree.innerHTML='';
+  TRAPS.forEach(t=>{
+    const n = document.createElement('div');
+    n.className = 'node' + (mastered(t.id)?' mastered':'') + (current && current.id===t.id?' active':'');
+    n.innerHTML = `<div class="dot"></div><div class="name">${t.name}</div>`;
+    n.onclick = ()=> loadTrap(t);
+    tree.appendChild(n);
+  });
+}
+
+function squareEl(file,rank){ return document.querySelector(`[data-sq="${file}${rank}"]`); }
+
+function renderBoard(){
+  const boardEl = document.getElementById('board');
+  boardEl.innerHTML='';
+  const b = game.board();
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      const file = 'abcdefgh'[c], rank = 8-r;
+      const sq = document.createElement('div');
+      sq.className = 'sq ' + (((r+c)%2===0)?'l':'d');
+      sq.dataset.sq = file+rank;
+      const p = b[r][c];
+      if(p){
+        sq.textContent = pieceChar(p);
+        sq.classList.add(p.color==='w'?'piece-w':'piece-b');
+      }
+      sq.onclick = ()=> onSquareClick(file+rank);
+      boardEl.appendChild(sq);
+    }
+  }
+}
+
+function pieceChar(p){
+  const map = {p:'♟',n:'♞',b:'♝',r:'♜',q:'♛',k:'♚'};
+  return map[p.type];
+}
+
+function loadTrap(t){
+  current = t;
+  clearInterval(timer);
+  document.getElementById('retry').style.display='none';
+  game = new Chess();
+  const setup = t.moves.slice(0,-1);
+  setup.forEach(m=>game.move(m));
+  renderBoard();
+  renderTree();
+  document.getElementById('desc').textContent='';
+  document.getElementById('status').textContent = 'Opponent is thinking...';
+  locked = true;
+  setTimeout(()=>{
+    const blunder = t.moves[t.moves.length-1];
+    const mv = game.move(blunder);
+    renderBoard();
+    highlight(mv.from, mv.to, null);
+    document.getElementById('status').textContent = '⚡ Opponent blundered! Find the punishing move!';
+    const test = new Chess(); t.moves.forEach(m=>test.move(m));
+    const puMove = test.move(t.punish);
+    expected = { from: puMove.from, to: puMove.to };
+    startTimer();
+    locked = false;
+  }, 900);
+}
+
+function highlight(from,to,cls){
+  [from,to].forEach(sq=>{
+    const el = document.querySelector(`[data-sq="${sq}"]`);
+    if(el && cls) el.classList.add(cls);
+  });
+}
+
+function startTimer(){
+  timeLeft = 5.0;
+  document.getElementById('timerfill').style.width='100%';
+  timer = setInterval(()=>{
+    timeLeft -= 0.1;
+    document.getElementById('timerfill').style.width = Math.max(0,(timeLeft/5)*100)+'%';
+    if(timeLeft<=0){
+      clearInterval(timer);
+      fail(true);
+    }
+  },100);
+}
+
+function onSquareClick(sq){
+  if(locked || !current) return;
+  const piece = game.get(sq);
+  if(selected===sq){ deselect(); return; }
+  if(piece && piece.color===game.turn()){
+    deselect();
+    selected = sq;
+    document.querySelector(`[data-sq="${sq}"]`).classList.add('sel');
+    return;
+  }
+  if(selected){
+    const from = selected;
+    const move = game.move({from, to:sq, promotion:'q'});
+    deselect();
+    if(!move){ return; }
+    renderBoard();
+    if(move.from===expected.from && move.to===expected.to){
+      success();
+    } else {
+      game.undo();
+      renderBoard();
+      flash(sq,'bad');
+    }
+  }
+}
+
+function deselect(){
+  if(selected){ const el=document.querySelector(`[data-sq="${selected}"]`); if(el) el.classList.remove('sel'); }
+  selected=null;
+}
+
+function flash(sq,cls){
+  const el = document.querySelector(`[data-sq="${sq}"]`);
+  if(!el) return;
+  el.classList.add(cls);
+  setTimeout(()=>el.classList.remove(cls),400);
+}
+
+function success(){
+  clearInterval(timer);
+  locked = true;
+  highlight(expected.from, expected.to, 'good');
+  document.getElementById('status').textContent = '🔥 Nailed it! That\'s the punish.';
+  document.getElementById('desc').textContent = current.desc;
+  setMastered(current.id);
+  document.getElementById('retry').style.display='block';
+}
+
+function fail(timeout){
+  clearInterval(timer);
+  locked = true;
+  highlight(expected.from, expected.to, 'good');
+  document.getElementById('status').textContent = timeout ? '⏱ Time\'s up — here\'s the punish move.' : 'Not quite.';
+  document.getElementById('desc').textContent = current.desc;
+  document.getElementById('retry').style.display='block';
+}
+
+document.getElementById('retry').onclick = ()=> loadTrap(current);
+
+renderTree();
+game = new Chess();
+renderBoard();
+</script>
+</body>
+</html>
